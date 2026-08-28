@@ -1,0 +1,31 @@
+name: Build macOS DMG
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14 # M1 runner, faster
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Xcode deps
+        run: xcode-select --install || true
+        
+      - name: Build DMG
+        run: chmod +x build.sh && ./build.sh
+        
+      - name: Upload DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AEGIS_Capture_macOS
+          path: AEGIS_Capture_v1.0.0.dmg
+          
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AEGIS_Capture_v1.0.0.dmg
+          tag_name: v1.0.0-${{ github.run_number }}

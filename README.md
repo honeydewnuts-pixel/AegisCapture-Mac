@@ -1,22 +1,25 @@
-# AEGIS Capture - Mac
+# AEGIS Capture — macOS
 
-Screen region capture for MT5. Sends PNGs to AEGIS Cloud every 3s.
+Region capture for MetaTrader 5 on Mac. Sends frames to the AEGIS cloud brain.
 
-## How to Build
-1. Open in Xcode 15+
-2. OR just run: `chmod +x build.sh && ./build.sh`
+## Features
+- Screen region capture (requires **Screen Recording** permission)
+- Multipart upload to `/aegis/analyze` (same as mobile/Windows)
+- **MT5 Color Match Guide** in-app
+- `AEGIS_Executor.mq5` for Mac MT5
 
-## Requirements
-- macOS 13+
-- Xcode 15+
+## Build (macOS only)
 
-## Output
-`AEGIS_Capture_v1.0.0.dmg`
+```bash
+chmod +x build.sh
+./build.sh
+```
 
-## First Run Setup
-Go to System Settings > Privacy & Security > Screen Recording 
-Enable "AEGIS Capture"
+Output: `AEGIS_Capture_v1.0.0.dmg`
 
-## Repo Files
-- `build.sh` = One-click build + DMG creator
-- `AegisCapture.xcodeproj` = Xcode project
+## Client setup
+1. Open DMG → drag app to Applications
+2. System Settings → Privacy → Screen Recording → enable AEGIS Capture
+3. Enter portal API key + account id
+4. Open **Color Guide** and match MT5 indicators
+5. Start capture with MT5 chart visible

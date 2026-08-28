@@ -1,19 +1,34 @@
-#!/bin/bash
-# AEGIS Capture Mac Build Script
-# Run this on a Mac with Xcode 15+ installed
+#!/usr/bin/env bash
+# Build AEGIS Capture DMG on macOS (requires Xcode / Swift toolchain).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+APP_NAME="AEGIS_Capture"
+VERSION="1.0.0"
+BUILD_DIR="$ROOT/build"
+APP_DIR="$BUILD_DIR/$APP_NAME.app"
+CONTENTS="$APP_DIR/Contents"
+MACOS="$CONTENTS/MacOS"
+RES="$CONTENTS/Resources"
 
-echo "Building AEGIS Capture for Mac..."
+rm -rf "$BUILD_DIR"
+mkdir -p "$MACOS" "$RES"
 
-# 1. Build the .app using xcodebuild
-xcodebuild -project AegisCapture.xcodeproj -scheme AegisCapture -configuration Release -derivedDataPath build
+echo "==> Compiling Swift sources…"
+swiftc -O \
+  -framework SwiftUI -framework AppKit -framework Foundation -framework ScreenCaptureKit -framework CoreMedia \
+  AegisCaptureApp.swift ContentView.swift config.swift CaptureService.swift TradeBridge.swift \
+  -o "$MACOS/$APP_NAME"
 
-# 2. Find the .app and copy to Release folder
-APP_PATH=$(find build -name "AEGIS_Capture.app" -type d | head -n 1)
-mkdir -p Release
-cp -R "$APP_PATH" Release/
+cp Info.plist "$CONTENTS/Info.plist"
+cp Resources/mt5_color_match_guide.jpg "$RES/" 2>/dev/null || true
+cp guides/mt5_color_match_guide.jpg "$RES/" 2>/dev/null || true
+cp mq5/AEGIS_Executor.mq5 "$RES/" 2>/dev/null || true
 
-# 3. Create DMG installer
-DMG_NAME="AEGIS_Capture_v1.0.0.dmg"
-hdiutil create -volname "AEGIS Capture" -srcfolder "Release" -ov -format UDZO "$DMG_NAME"
+chmod +x "$MACOS/$APP_NAME"
 
-echo "Build complete! Output: $DMG_NAME"
+DMG_NAME="AEGIS_Capture_v${VERSION}.dmg"
+rm -f "$ROOT/$DMG_NAME"
+hdiutil create -volname "AEGIS Capture" -srcfolder "$APP_DIR" -ov -format UDZO "$ROOT/$DMG_NAME"
+echo "==> Built $ROOT/$DMG_NAME"
+ls -lh "$ROOT/$DMG_NAME"

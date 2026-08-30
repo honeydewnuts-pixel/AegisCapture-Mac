@@ -1,23 +1,20 @@
 import SwiftUI
-import ScreenCaptureKit
+import CoreGraphics
 import Combine
 
 class CaptureService: NSObject, ObservableObject {
     @Published var isRunning = false
-    @Published var isSelectingRegion = false
     @Published var screenshotCount = 0
     @Published var lastSignal = "HOLD"
+    @Published var errorMessage: String?
     
     private var timer: Timer?
     private var region: CGRect = .zero
-    private var config: Config
-    private var apiClient: APIClient?
-    private var cancellables = Set<AnyCancellable>()
+    private var config: Config?
+    private var isCapturing = false
     
     override init() {
-        self.config = Config()
         super.init()
-        self.apiClient = APIClient(config: config)
     }
     
     func startCapture(config: Config, region: CGRect) {
@@ -25,9 +22,10 @@ class CaptureService: NSObject, ObservableObject {
         self.region = region
         self.isRunning = true
         self.screenshotCount = 0
+        self.errorMessage = nil
         
         // Check for screen recording permission
-        requestScreenRecordingPermission()
+        checkScreenRecordingPermission()
         
         // Start the timer
         timer = Timer.scheduledTimer(withTimeInterval: config.intervalSec, repeats: true) { [weak self] _ in
@@ -41,138 +39,69 @@ class CaptureService: NSObject, ObservableObject {
         timer = nil
     }
     
-    private func requestScreenRecordingPermission() {
-        // This will trigger the system permission dialog
+    private func checkScreenRecordingPermission() {
+        // This will trigger the system permission dialog on first run
         if #available(macOS 14.0, *) {
-            SCShareableContent.getCurrentProcessContent { content, error in
-                if let error = error {
-                    print("Permission error: \(error)")
-                } else {
-                    print("Screen recording permission granted")
+            Task {
+                do {
+                    let content = try await SCShareableContent.current()
+                    print("Screen recording permission granted: \(content.displays.count) displays")
+                } catch {
+                    print("Screen recording permission error: \(error)")
+                    DispatchQueue.main.async {
+                        self.errorMessage = "Please grant screen recording permission in System Settings > Privacy & Security > Screen Recording"
+                    }
                 }
             }
         } else {
-            // Fallback for older macOS
-            let shareContent = SCShareableContent()
-            _ = shareContent
+            // For older macOS, use CGWindowListCopyWindowInfo to trigger permission
+            _ = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
         }
     }
     
     private func captureScreenshot() {
-        guard isRunning else { return }
+        guard isRunning, !isCapturing else { return }
+        isCapturing = true
         
-        // Create the capture configuration
-        let config = SCContentFilter()
-        // We want to capture the entire screen and then crop
-        let display = SCShareableContent.getCurrentDisplay()
-        
-        // Use ScreenCaptureKit for modern macOS
-        if #available(macOS 14.0, *) {
-            captureWithScreenCaptureKit()
-        } else {
-            // Fallback for older macOS versions
-            captureWithDeprecatedMethod()
-        }
-    }
-    
-    @available(macOS 14.0, *)
-    private func captureWithScreenCaptureKit() {
-        // Configure the capture
-        let contentFilter = SCContentFilter()
-        
-        // Create a stream configuration for the region
-        let streamConfig = SCStreamConfiguration()
-        streamConfig.width = Int(region.width)
-        streamConfig.height = Int(region.height)
-        streamConfig.capturesAudio = false
-        streamConfig.showsCursor = false
-        
-        // Get the actual screen scale for proper capture
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        streamConfig.scalesToFit = true
-        streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: 2) // 30fps
-        
-        // Create stream output handler
-        let streamOutput = SCStreamOutput()
-        
-        // Start the stream
-        Task {
-            do {
-                // Get the display content
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                
-                // Find the display
-                guard let display = content.displays.first else {
-                    print("No display found")
-                    return
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let image = self.captureScreenRegion()
+            
+            DispatchQueue.main.async {
+                self.isCapturing = false
+                if let image = image {
+                    self.processImage(image)
                 }
-                
-                // Create a filter for the display
-                let filter = SCContentFilter(display: display, excludingWindows: [])
-                
-                // Create the stream
-                let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
-                
-                // Add output
-                try stream.addStreamOutput(streamOutput, type: .screen, sampleHandlerQueue: .main)
-                
-                // Start the stream
-                try await stream.startCapture()
-                
-                // For now, we'll capture a single frame since we only need periodic screenshots
-                // In a real implementation, you'd use the stream output handler
-                if let image = await captureFrame(stream: stream, config: streamConfig) {
-                    processCapturedImage(image)
-                }
-                
-                // Stop after one frame
-                try await stream.stopCapture()
-                
-            } catch {
-                print("ScreenCaptureKit error: \(error)")
-                // Fallback to deprecated method if ScreenCaptureKit fails
-                captureWithDeprecatedMethod()
             }
         }
     }
     
-    @available(macOS 14.0, *)
-    private func captureFrame(stream: SCStream, config: SCStreamConfiguration) async -> NSImage? {
-        // This is a simplified approach - for a full implementation you'd use the stream output
-        // to get the actual frame data
-        
-        // Since getting a single frame from SCStream is complex, 
-        // we'll use the deprecated method as fallback for now
-        return nil
-    }
-    
-    private func captureWithDeprecatedMethod() {
-        // Use the deprecated method as fallback
-        // This will still work in current macOS versions but may be removed in future
-        #if !targetEnvironment(simulator)
+    private func captureScreenRegion() -> NSImage? {
         let screenRect = region
-        let windowID = CGWindowID(0) // Use 0 to capture desktop
         
-        // For deprecated method, we need to handle the warning
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        guard let cgImage = CGWindowListCreateImage(
-            screenRect,
-            .optionOnScreenBelowWindow,
-            windowID,
-            .bestResolution
-        ) else {
+        // Use the deprecated method - it still works in current macOS
+        // We'll suppress the warning by using a wrapper
+        guard let cgImage = self.captureCGImage(rect: screenRect) else {
             print("Failed to capture screenshot")
-            return
+            return nil
         }
-        #pragma clang diagnostic pop
         
-        let image = NSImage(cgImage: cgImage, size: screenRect.size)
-        processCapturedImage(image)
-        #endif
+        return NSImage(cgImage: cgImage, size: screenRect.size)
     }
     
-    private func processCapturedImage(_ image: NSImage) {
+    private func captureCGImage(rect: CGRect) -> CGImage? {
+        // Direct call to CGWindowListCreateImage with proper parameters
+        // This is deprecated but still works in macOS 14 and 15
+        let options: CGWindowListOption = [.optionOnScreenBelowWindow, .excludeDesktopElements]
+        let windowID = CGWindowID(0)
+        let imageOption: CGWindowImageOption = [.bestResolution, .boundsIgnoreFraming]
+        
+        // Use the API directly - it will work for now
+        return CGWindowListCreateImage(rect, options, windowID, imageOption)
+    }
+    
+    private func processImage(_ image: NSImage) {
         guard let tiffData = image.tiffRepresentation,
               let bitmapImage = NSBitmapImageRep(data: tiffData) else {
             print("Failed to convert image")
@@ -187,55 +116,29 @@ class CaptureService: NSObject, ObservableObject {
         // Send to API
         sendToAPI(pngData)
         
-        screenshotCount += 1
-    }
-    
-    private func sendToAPI(_ imageData: Data) {
-        // Convert to Base64 for sending
-        let base64String = imageData.base64EncodedString()
-        
-        // Send to API
-        apiClient?.analyzeScreenshot(imageBase64: base64String) { [weak self] result in
-            switch result {
-            case .success(let signal):
-                DispatchQueue.main.async {
-                    self?.lastSignal = signal
-                }
-            case .failure(let error):
-                print("API error: \(error)")
-            }
+        DispatchQueue.main.async {
+            self.screenshotCount += 1
         }
     }
     
-    func selectRegion() {
-        isSelectingRegion = true
-        // This would trigger a region selection UI
-        // You can implement a custom region selector here
-        isSelectingRegion = false
-    }
-}
-
-// Helper class for API communication
-class APIClient {
-    private let config: Config
-    private let session = URLSession.shared
-    
-    init(config: Config) {
-        self.config = config
-    }
-    
-    func analyzeScreenshot(imageBase64: String, completion: @escaping (Result<String, Error>) -> Void) {
+    private func sendToAPI(_ imageData: Data) {
+        guard let config = config else { return }
+        
+        let base64String = imageData.base64EncodedString()
+        
+        // Send to API using URLSession
         guard let url = URL(string: "\(config.serverURL)/aegis/analyze") else {
-            completion(.failure(NSError(domain: "Invalid URL", code: -1)))
+            print("Invalid server URL")
             return
         }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
         
         let body: [String: Any] = [
-            "image": imageBase64,
+            "image": base64String,
             "account_id": config.accountID,
             "api_key": config.apiKey,
             "device_id": config.deviceID
@@ -244,95 +147,48 @@ class APIClient {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
-            completion(.failure(error))
+            print("Error serializing request: \(error)")
             return
         }
         
-        let task = session.dataTask(with: request) { data, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             if let error = error {
-                completion(.failure(error))
+                print("API error: \(error)")
                 return
             }
             
             guard let data = data else {
-                completion(.failure(NSError(domain: "No data", code: -1)))
+                print("No data from API")
                 return
             }
             
             do {
-                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                let signal = json?["signal"] as? String ?? "HOLD"
-                completion(.success(signal))
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let signal = json["signal"] as? String {
+                    DispatchQueue.main.async {
+                        self?.lastSignal = signal
+                        // Write signal to file for MT5
+                        self?.writeSignalToFile(signal)
+                    }
+                }
             } catch {
-                completion(.failure(error))
+                print("Error parsing response: \(error)")
             }
-        }
-        
-        task.resume()
-    }
-}
-
-// MARK: - SCShareableContent Extension for backward compatibility
-@available(macOS 13.0, *)
-extension SCShareableContent {
-    static func getCurrentProcessContent(completion: @escaping (SCShareableContent?, Error?) -> Void) {
-        Task {
-            do {
-                let content = try await SCShareableContent.current()
-                completion(content, nil)
-            } catch {
-                completion(nil, error)
-            }
-        }
+        }.resume()
     }
     
-    static func getCurrentDisplay() -> SCDisplay? {
-        Task {
+    private func writeSignalToFile(_ signal: String) {
+        // Write signal to file for MT5 to read
+        let fileManager = FileManager.default
+        let paths = fileManager.urls(for: .documentDirectory, in: .userDomainMask)
+        if let documentsDirectory = paths.first {
+            let fileURL = documentsDirectory.appendingPathComponent("aegis_signal.txt")
             do {
-                let content = try await SCShareableContent.current()
-                return content.displays.first
+                try signal.write(to: fileURL, atomically: true, encoding: .utf8)
+                print("Signal written to file: \(signal)")
             } catch {
-                return nil
+                print("Error writing signal to file: \(error)")
             }
         }
-        return nil
-    }
-}
-
-// MARK: - SCContentFilter Extension
-@available(macOS 13.0, *)
-extension SCContentFilter {
-    convenience init() {
-        // Default initializer
-        self.init(display: SCDisplay(), excludingWindows: [])!
-    }
-    
-    convenience init(display: SCDisplay, excludingWindows windows: [SCWindow]) {
-        self.init(display: display, excludingWindows: windows)!
-    }
-}
-
-// MARK: - SCStreamOutput
-class SCStreamOutput: NSObject, SCStreamOutput {
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        // Handle sample buffer here
-        // This gets called for each frame
-        // Convert sampleBuffer to image and process
-    }
-}
-
-// MARK: - SCStream Configuration
-extension SCStreamConfiguration {
-    convenience init() {
-        self.init()
-        // Default configuration
-    }
-}
-
-// MARK: - Memory Warning Handling
-extension CaptureService {
-    func handleMemoryWarning() {
-        // Clear any cached images or data
-        print("Memory warning received - cleaning up")
     }
 }

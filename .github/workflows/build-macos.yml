@@ -1,31 +1,188 @@
-name: Build macOS DMG
+name: Build and Release AegisCapture-Mac
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      build_number:
+        description: 'Manual build number (optional)'
+        required: false
+        default: ''
 
 jobs:
-  build:
-    runs-on: macos-14 # M1 runner, faster
+  build-mac:
+    name: Build macOS Application
+    runs-on: macos-latest
+    
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Xcode deps
-        run: xcode-select --install || true
-        
-      - name: Build DMG
-        run: chmod +x build.sh && ./build.sh
-        
-      - name: Upload DMG Artifact
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Debug - List Files
+        run: |
+          echo "=== Repository Contents ==="
+          find . -type f -name "*.swift" -o -name "*.xcodeproj" -o -name "*.xcworkspace" | head -20
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.0'
+
+      - name: Build macOS App
+        run: |
+          # Find the Xcode project
+          PROJECT_FILE=$(find . -name "*.xcodeproj" -type d | head -1)
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "❌ No Xcode project found!"
+            exit 1
+          fi
+          echo "Building: $PROJECT_FILE"
+          
+          # Build the app
+          xcodebuild build \
+            -project "$PROJECT_FILE" \
+            -scheme AegisCapture \
+            -configuration Release \
+            -derivedDataPath ./build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Find and Copy Built App
+        run: |
+          # Find the built .app
+          APP_PATH=$(find ./build -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app bundle found!"
+            find ./build -type d | head -20
+            exit 1
+          fi
+          
+          echo "Found app: $APP_PATH"
+          mkdir -p ./dist
+          cp -r "$APP_PATH" ./dist/
+          
+          # Get app name
+          APP_NAME=$(basename "$APP_PATH")
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+
+      - name: Verify macOS App
+        run: |
+          if [ -d "./dist/${{ env.APP_NAME }}" ]; then
+            echo "✅ macOS app bundle created successfully"
+            du -sh ./dist/${{ env.APP_NAME }}
+            ls -la ./dist/${{ env.APP_NAME }}/Contents/MacOS/
+          else
+            echo "❌ macOS app bundle not found!"
+            find ./dist -type d
+            exit 1
+          fi
+
+      - name: Create DMG (Optional)
+        run: |
+          brew install create-dmg
+          APP_NAME=$(echo "${{ env.APP_NAME }}" | sed 's/\.app$//')
+          create-dmg \
+            --volname "$APP_NAME" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "${{ env.APP_NAME }}.app" 200 190 \
+            --hide-extension "${{ env.APP_NAME }}.app" \
+            --app-drop-link 600 185 \
+            ./dist/$APP_NAME.dmg \
+            ./dist/${{ env.APP_NAME }}.app
+
+      - name: Upload macOS App Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: AEGIS_Capture_macOS
-          path: AEGIS_Capture_v1.0.0.dmg
-          
-      - name: Create Release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+          name: AegisCapture-Mac
+          path: ./dist/*.app
+          retention-days: 7
+
+      - name: Upload DMG (if created)
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          files: AEGIS_Capture_v1.0.0.dmg
-          tag_name: v1.0.0-${{ github.run_number }}
+          name: AegisCapture-Mac-DMG
+          path: ./dist/*.dmg
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Generate Version Tag
+        id: version
+        run: |
+          BUILD_DATE=$(date +%Y-%m-%d)
+          if [ -n "${{ github.event.inputs.build_number }}" ]; then
+            BUILD_NUM="${{ github.event.inputs.build_number }}"
+          else
+            BUILD_NUM="${{ github.run_number }}"
+          fi
+          VERSION="v${BUILD_DATE}-$(printf "%02d" $BUILD_NUM)"
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "TAG=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Created version: ${VERSION}"
+
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p ./release-assets
+          
+          # Find and copy .app bundles
+          find ./artifacts -name "*.app" -type d -exec cp -r {} ./release-assets/ \;
+          
+          # Find and copy .dmg files
+          find ./artifacts -name "*.dmg" -exec cp {} ./release-assets/ \;
+          
+          echo "Release assets:"
+          ls -la ./release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: AegisCapture-Mac ${{ steps.version.outputs.TAG }}
+          body: |
+            ## AegisCapture-Mac Release ${{ steps.version.outputs.TAG }}
+            
+            ### 🚀 Features
+            - macOS SwiftUI app
+            - Captures MT5 chart region
+            - Sends to AEGIS cloud
+            
+            ### 📦 Downloads
+            - **App Bundle**: `AegisCapture.app`
+            - **Installer**: `AegisCapture.dmg`
+            
+            ### 🔧 Installation
+            Open the DMG and drag AegisCapture.app to Applications folder
+            
+            ### 📝 Changelog
+            - Built from latest main branch
+            - macOS compatible
+          files: |
+            ./release-assets/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Output Release URL
+        run: |
+          echo "## ✅ Release Created Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "Release Tag: ${{ steps.version.outputs.TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.TAG }}" >> $GITHUB_STEP_SUMMARY

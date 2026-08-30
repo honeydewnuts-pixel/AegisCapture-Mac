@@ -34,111 +34,38 @@ jobs:
         with:
           xcode-version: 'latest'
 
-      - name: Check for Package.swift
-        id: check-package
+      - name: Build with build.sh
         run: |
-          if [ -f "Package.swift" ]; then
-            echo "Found Package.swift - using Swift Package Manager"
-            echo "USE_SPM=true" >> $GITHUB_ENV
-          else
-            echo "No Package.swift found"
-            echo "USE_SPM=false" >> $GITHUB_ENV
-          fi
+          chmod +x build.sh
+          ./build.sh
 
-      - name: Build with Swift Package Manager
-        if: env.USE_SPM == 'true'
+      - name: Find and Copy Built App
         run: |
-          swift build -c release --arch arm64 --arch x86_64
-          # Find the built executable
-          BUILD_PATH=$(find .build -name "AegisCapture" -type f | head -1)
-          if [ -n "$BUILD_PATH" ]; then
-            echo "✅ Build successful: $BUILD_PATH"
-            mkdir -p ./dist
-            cp -r "$BUILD_PATH" ./dist/
-          else
-            echo "❌ Could not find built executable"
-            find .build -type f
+          # Find the built .app
+          APP_PATH=$(find ./build -name "*.app" -type d -o -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app bundle found!"
+            find . -name "*.app" -type d | head -20
             exit 1
           fi
+          
+          echo "Found app: $APP_PATH"
+          mkdir -p ./dist
+          cp -r "$APP_PATH" ./dist/
+          
+          # Get app name
+          APP_NAME=$(basename "$APP_PATH")
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
 
-      - name: Create App Bundle
-        if: env.USE_SPM == 'true'
+      - name: Verify macOS App
         run: |
-          mkdir -p ./dist/AegisCapture.app/Contents/MacOS
-          mkdir -p ./dist/AegisCapture.app/Contents/Resources
-          
-          # Copy executable
-          if [ -f "./dist/AegisCapture" ]; then
-            cp ./dist/AegisCapture ./dist/AegisCapture.app/Contents/MacOS/
+          if [ -d "./dist/${{ env.APP_NAME }}" ]; then
+            echo "✅ macOS app bundle created successfully"
+            du -sh ./dist/${{ env.APP_NAME }}
+            ls -la ./dist/${{ env.APP_NAME }}/Contents/
           else
-            # Try to find the executable
-            EXEC_PATH=$(find .build -name "AegisCapture" -type f | head -1)
-            if [ -n "$EXEC_PATH" ]; then
-              cp "$EXEC_PATH" ./dist/AegisCapture.app/Contents/MacOS/
-            else
-              echo "❌ Could not find executable"
-              exit 1
-            fi
-          fi
-          
-          # Copy Info.plist if exists
-          if [ -f "Info.plist" ]; then
-            cp Info.plist ./dist/AegisCapture.app/Contents/
-          else
-            # Create a default Info.plist
-            cat > ./dist/AegisCapture.app/Contents/Info.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>AegisCapture</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.aegiscapture.mac</string>
-    <key>CFBundleName</key>
-    <string>AegisCapture</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
-    <key>CFBundleVersion</key>
-    <string>1.0.0</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>AegisCapture needs to control MetaTrader 5</string>
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>AegisCapture needs to capture the MT5 chart region</string>
-</dict>
-</plist>
-EOF
-          fi
-          
-          # Copy resources
-          if [ -d "Resources" ]; then
-            cp -r Resources/* ./dist/AegisCapture.app/Contents/Resources/ 2>/dev/null || true
-          fi
-          
-          # Make executable
-          chmod +x ./dist/AegisCapture.app/Contents/MacOS/AegisCapture
-
-      - name: Verify App Bundle
-        run: |
-          if [ -d "./dist/AegisCapture.app" ]; then
-            echo "✅ App bundle created successfully"
-            du -sh ./dist/AegisCapture.app
-            echo "Contents:"
-            ls -la ./dist/AegisCapture.app/Contents/
-            if [ -f "./dist/AegisCapture.app/Contents/MacOS/AegisCapture" ]; then
-              echo "✅ Executable found"
-              file ./dist/AegisCapture.app/Contents/MacOS/AegisCapture
-            else
-              echo "⚠️ No executable found in app bundle"
-              find ./dist/AegisCapture.app -type f
-            fi
-          else
-            echo "❌ App bundle not created"
-            find ./dist -type f
+            echo "❌ macOS app bundle not found!"
+            find ./dist -type d
             exit 1
           fi
 
@@ -147,16 +74,17 @@ EOF
         run: |
           brew install create-dmg || true
           if command -v create-dmg &> /dev/null; then
+            APP_NAME_NO_EXT=$(echo "${{ env.APP_NAME }}" | sed 's/\.app$//')
             create-dmg \
-              --volname "AegisCapture" \
+              --volname "$APP_NAME_NO_EXT" \
               --window-pos 200 120 \
               --window-size 800 400 \
               --icon-size 100 \
-              --icon "AegisCapture.app" 200 190 \
-              --hide-extension "AegisCapture.app" \
+              --icon "${{ env.APP_NAME }}" 200 190 \
+              --hide-extension "${{ env.APP_NAME }}" \
               --app-drop-link 600 185 \
-              ./dist/AegisCapture.dmg \
-              ./dist/AegisCapture.app || echo "DMG creation failed, continuing"
+              ./dist/$APP_NAME_NO_EXT.dmg \
+              ./dist/${{ env.APP_NAME }} || echo "DMG creation failed, continuing"
           else
             echo "create-dmg not available, skipping DMG"
           fi
@@ -165,7 +93,7 @@ EOF
         uses: actions/upload-artifact@v4
         with:
           name: AegisCapture-Mac
-          path: ./dist/AegisCapture.app
+          path: ./dist/*.app
           retention-days: 7
 
       - name: Upload DMG (if created)
@@ -214,21 +142,21 @@ EOF
           mkdir -p ./release-assets
           
           # Find and copy .app bundles
-          find ./artifacts -name "*.app" -type d -exec cp -r {} ./release-assets/ \;
+          find ./artifacts -name "*.app" -type d -exec cp -r {} ./release-assets/ \; 2>/dev/null || true
           
           # Find and copy .dmg files
-          find ./artifacts -name "*.dmg" -exec cp {} ./release-assets/ \;
+          find ./artifacts -name "*.dmg" -exec cp {} ./release-assets/ \; 2>/dev/null || true
           
           # If nothing found, create a zip of what we have
-          if [ -z "$(ls -A ./release-assets)" ]; then
+          if [ -z "$(ls -A ./release-assets 2>/dev/null)" ]; then
             echo "No app bundles found, creating archive"
             cd ./artifacts
-            zip -r ../release-assets/AegisCapture-Mac.zip ./*
+            zip -r ../release-assets/AegisCapture-Mac.zip ./* || true
             cd ..
           fi
           
           echo "Release assets:"
-          ls -la ./release-assets/
+          ls -la ./release-assets/ || echo "No assets"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -245,18 +173,17 @@ EOF
             - BUY/SELL/HOLD signal display
             
             ### 📦 Downloads
-            - **App Bundle**: `AegisCapture.app` (drag to Applications)
-            - **DMG Installer**: `AegisCapture.dmg` (easier installation)
+            - **App Bundle**: `AegisCapture.app`
+            - **DMG Installer**: `AegisCapture.dmg`
             
             ### 🔧 Installation
-            1. Open the DMG or download the app bundle
+            1. Download the app bundle or DMG
             2. Move AegisCapture.app to Applications folder
             3. Open and grant required permissions
             
             ### 📝 Changelog
             - Built from latest main branch
             - Compatible with macOS 14+
-            - SwiftUI native interface
           files: |
             ./release-assets/*
           draft: false

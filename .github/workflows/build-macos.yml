@@ -25,31 +25,53 @@ jobs:
         run: |
           echo "=== Repository Contents ==="
           find . -type f -name "*.swift" -o -name "*.xcodeproj" -o -name "*.xcworkspace" | head -20
+          echo ""
+          echo "=== Xcode Versions Available ==="
+          ls /Applications/ | grep Xcode
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '15.0'
+          # Use a version that exists on the runner
+          # Based on the output: 26.6.0 is available
+          xcode-version: '26.6.0'  # Xcode 16.6
+          # Or use 'latest' to always get the newest
+          # xcode-version: 'latest'
 
       - name: Build macOS App
         run: |
-          # Find the Xcode project
+          # Find the Xcode project or workspace
           PROJECT_FILE=$(find . -name "*.xcodeproj" -type d | head -1)
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "❌ No Xcode project found!"
+          WORKSPACE_FILE=$(find . -name "*.xcworkspace" -type d | head -1)
+          
+          if [ -n "$WORKSPACE_FILE" ]; then
+            echo "Building workspace: $WORKSPACE_FILE"
+            # Build using workspace
+            xcodebuild build \
+              -workspace "$WORKSPACE_FILE" \
+              -scheme AegisCapture \
+              -configuration Release \
+              -derivedDataPath ./build \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO
+          elif [ -n "$PROJECT_FILE" ]; then
+            echo "Building project: $PROJECT_FILE"
+            # Build using project
+            xcodebuild build \
+              -project "$PROJECT_FILE" \
+              -scheme AegisCapture \
+              -configuration Release \
+              -derivedDataPath ./build \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO
+          else
+            echo "❌ No Xcode project or workspace found!"
+            echo "Files in current directory:"
+            ls -la
             exit 1
           fi
-          echo "Building: $PROJECT_FILE"
-          
-          # Build the app
-          xcodebuild build \
-            -project "$PROJECT_FILE" \
-            -scheme AegisCapture \
-            -configuration Release \
-            -derivedDataPath ./build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
 
       - name: Find and Copy Built App
         run: |
@@ -68,47 +90,33 @@ jobs:
           # Get app name
           APP_NAME=$(basename "$APP_PATH")
           echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
 
       - name: Verify macOS App
         run: |
           if [ -d "./dist/${{ env.APP_NAME }}" ]; then
             echo "✅ macOS app bundle created successfully"
             du -sh ./dist/${{ env.APP_NAME }}
-            ls -la ./dist/${{ env.APP_NAME }}/Contents/MacOS/
+            echo "Contents:"
+            ls -la ./dist/${{ env.APP_NAME }}/Contents/MacOS/ 2>/dev/null || echo "No MacOS folder found"
+            # Check if it's a valid bundle
+            if [ -f "./dist/${{ env.APP_NAME }}/Contents/Info.plist" ]; then
+              echo "✅ Info.plist found"
+              cat ./dist/${{ env.APP_NAME }}/Contents/Info.plist | head -20
+            else
+              echo "⚠️ Info.plist not found"
+            fi
           else
             echo "❌ macOS app bundle not found!"
             find ./dist -type d
             exit 1
           fi
 
-      - name: Create DMG (Optional)
-        run: |
-          brew install create-dmg
-          APP_NAME=$(echo "${{ env.APP_NAME }}" | sed 's/\.app$//')
-          create-dmg \
-            --volname "$APP_NAME" \
-            --window-pos 200 120 \
-            --window-size 800 400 \
-            --icon-size 100 \
-            --icon "${{ env.APP_NAME }}.app" 200 190 \
-            --hide-extension "${{ env.APP_NAME }}.app" \
-            --app-drop-link 600 185 \
-            ./dist/$APP_NAME.dmg \
-            ./dist/${{ env.APP_NAME }}.app
-
       - name: Upload macOS App Bundle
         uses: actions/upload-artifact@v4
         with:
           name: AegisCapture-Mac
           path: ./dist/*.app
-          retention-days: 7
-
-      - name: Upload DMG (if created)
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: AegisCapture-Mac-DMG
-          path: ./dist/*.dmg
           retention-days: 7
 
   create-release:
@@ -123,6 +131,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
+
+      - name: Debug - Check Downloaded Artifacts
+        run: |
+          echo "=== Downloaded Artifacts ==="
+          find ./artifacts -type f -o -type d | head -50
 
       - name: Generate Version Tag
         id: version
@@ -145,9 +158,7 @@ jobs:
           # Find and copy .app bundles
           find ./artifacts -name "*.app" -type d -exec cp -r {} ./release-assets/ \;
           
-          # Find and copy .dmg files
-          find ./artifacts -name "*.dmg" -exec cp {} ./release-assets/ \;
-          
+          # List what we have
           echo "Release assets:"
           ls -la ./release-assets/
 
@@ -165,15 +176,16 @@ jobs:
             - Sends to AEGIS cloud
             
             ### 📦 Downloads
-            - **App Bundle**: `AegisCapture.app`
-            - **Installer**: `AegisCapture.dmg`
+            - **App Bundle**: Download the `.app` folder as a zip
             
             ### 🔧 Installation
-            Open the DMG and drag AegisCapture.app to Applications folder
+            1. Download the app bundle
+            2. Move to Applications folder
+            3. Open and allow permissions
             
             ### 📝 Changelog
             - Built from latest main branch
-            - macOS compatible
+            - Compatible with macOS 14+
           files: |
             ./release-assets/*
           draft: false

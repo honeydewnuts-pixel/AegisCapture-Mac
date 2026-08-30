@@ -231,7 +231,7 @@ struct ColorGuideView: View {
                             }
                             HStack {
                                 Rectangle()
-                                    .fill(Color.magenta)
+                                    .fill(Color(red: 1.0, green: 0.0, blue: 1.0)) // Magenta
                                     .frame(width: 30, height: 20)
                                 Text("MA7 = Magenta (#FF00FF)")
                             }

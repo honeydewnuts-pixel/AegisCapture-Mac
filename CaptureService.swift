@@ -17,11 +17,14 @@ import ScreenCaptureKit   // BUG FIX: was missing — SCShareableContent below w
 ///     which matches where MetaTrader 5 for Mac (Wine-based) actually
 ///     looks for Common\Files. The original wrote to `~/Documents`,
 ///     which the EA would never read from.
-///  4. Screen capture now prefers `SCScreenshotManager` (ScreenCaptureKit,
-///     macOS 14+) instead of the deprecated `CGWindowListCreateImage`,
-///     which Apple has been actively restricting for sandboxed apps.
-///     A legacy fallback is kept for macOS 13 for compatibility, but if
-///     you only need to support 14+, consider removing it entirely.
+///  4. Screen capture uses `SCScreenshotManager` (ScreenCaptureKit,
+///     macOS 14+) exclusively. An earlier version of this fix kept a
+///     fallback to the deprecated `CGWindowListCreateImage` for macOS
+///     13 — that API has since been fully removed (not just
+///     deprecated) from the SDK, so any reference to it is now a hard
+///     compile error regardless of version-availability guards. The
+///     fallback is removed entirely; this app now requires macOS 14+
+///     (Info.plist's LSMinimumSystemVersion is updated to match).
 class CaptureService: NSObject, ObservableObject {
     @Published var isRunning = false
     @Published var screenshotCount = 0
@@ -88,47 +91,29 @@ class CaptureService: NSObject, ObservableObject {
         }
     }
 
-    /// Captures the configured screen region using ScreenCaptureKit on
-    /// macOS 14+, falling back to the legacy (deprecated) CGWindowList
-    /// API only on older systems. Note: the legacy path is unlikely to
-    /// work correctly while `com.apple.security.app-sandbox` is enabled
-    /// in AegisCapture.entitlements — if you need to support macOS 13,
-    /// test this specifically, since Apple restricts that API under
-    /// sandboxing.
+    /// Captures the configured screen region using ScreenCaptureKit.
+    /// Requires macOS 14+ (see Info.plist LSMinimumSystemVersion).
     private func captureScreenRegion() async -> NSImage? {
-        if #available(macOS 14.0, *) {
-            do {
-                guard let display = try await SCShareableContent.current.displays.first else {
-                    print("No displays available to capture")
-                    return nil
-                }
-                let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-                let config = SCStreamConfiguration()
-                config.sourceRect = region
-                config.width = max(1, Int(region.width))
-                config.height = max(1, Int(region.height))
-                config.showsCursor = false
-                let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                return NSImage(cgImage: cgImage, size: region.size)
-            } catch {
-                print("ScreenCaptureKit capture failed: \(error)")
+        do {
+            guard let display = try await SCShareableContent.current.displays.first else {
+                print("No displays available to capture")
                 return nil
             }
-        } else {
-            guard let cgImage = legacyCaptureCGImage(rect: region) else {
-                print("Failed to capture screenshot (legacy path)")
-                return nil
-            }
+            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            let streamConfig = SCStreamConfiguration()
+            streamConfig.sourceRect = region
+            streamConfig.width = max(1, Int(region.width))
+            streamConfig.height = max(1, Int(region.height))
+            streamConfig.showsCursor = false
+            let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: streamConfig)
             return NSImage(cgImage: cgImage, size: region.size)
+        } catch {
+            print("ScreenCaptureKit capture failed: \(error)")
+            await MainActor.run {
+                self.errorMessage = "Screen capture failed: \(error.localizedDescription)"
+            }
+            return nil
         }
-    }
-
-    /// Deprecated fallback for macOS < 14 only. Kept for compatibility;
-    /// verify this actually works under App Sandbox before relying on it.
-    private func legacyCaptureCGImage(rect: CGRect) -> CGImage? {
-        let options: CGWindowListOption = [.optionOnScreenBelowWindow, .excludeDesktopElements]
-        let imageOption: CGWindowImageOption = [.bestResolution, .boundsIgnoreFraming]
-        return CGWindowListCreateImage(rect, options, kCGNullWindowID, imageOption)
     }
 
     private func processImage(_ image: NSImage) async {

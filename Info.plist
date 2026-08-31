@@ -37,10 +37,13 @@
 	<key>NSNetworkClientUsageDescription</key>
 	<string>AEGIS uploads screenshots to cloud for analysis</string>
 
-	<!-- Added: ScreenCaptureKit-based capture (used by the fixed
-	     CaptureService.swift) requires macOS 14 for the modern API. -->
+	<!-- BUG FIX: CaptureService.swift now uses ScreenCaptureKit's
+	     SCScreenshotManager exclusively (the legacy CGWindowListCreateImage
+	     fallback for macOS 13 was removed — Apple fully deleted that API
+	     from the SDK, making it a hard compile error, not just a
+	     deprecation warning). This app now requires macOS 14+. -->
 	<key>LSMinimumSystemVersion</key>
-	<string>13.0</string>
+	<string>14.0</string>
 
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.finance</string>

@@ -35,7 +35,7 @@ class CaptureService: NSObject, ObservableObject {
     private var region: CGRect = .zero
     private var config: Config?
     private var isCapturing = false
-    private let bridge = TradeBridge()
+    let bridge = TradeBridge()
 
     override init() {
         super.init()

@@ -14,9 +14,12 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 20) {
             // Title
-            Text("AegisCapture")
+            Text("AEGIS Capture V46")
                 .font(.largeTitle)
                 .fontWeight(.bold)
+            Text("V46 · plain MT5 chart · server pairs/rulebook registry")
+                .font(.caption)
+                .foregroundColor(.secondary)
             
             // Status
             HStack {
@@ -126,7 +129,7 @@ struct ContentView: View {
                 .disabled(config.accountID.isEmpty || config.apiKey.isEmpty)
                 
                 Button("Color Guide") {
-                    showColorGuide = true
+                    Task { await capture.bridge.loadRegistry(config: config) }
                 }
                 .buttonStyle(.bordered)
                 
@@ -170,7 +173,7 @@ struct ColorGuideView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("MT5 Color Match Guide")
+            Text("MT5 Legacy color guide (optional)")
                 .font(.title)
                 .fontWeight(.bold)
                 .padding(.bottom, 10)
